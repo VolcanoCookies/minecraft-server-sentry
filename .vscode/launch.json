@@ -1,0 +1,48 @@
+{
+	// Use IntelliSense to learn about possible attributes.
+	// Hover to view descriptions of existing attributes.
+	// For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug executable 'minecraft-server-sentry'",
+			"env": {
+				"RUST_BACKTRACE": "full"
+			},
+			"cargo": {
+				"args": [
+					"build",
+					"--bin=minecraft-server-sentry",
+					"--package=minecraft-server-sentry"
+				],
+				"filter": {
+					"name": "minecraft-server-sentry",
+					"kind": "bin"
+				}
+			},
+			"args": [],
+			"cwd": "${workspaceFolder}"
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug unit tests in executable 'minecraft-server-sentry'",
+			"cargo": {
+				"args": [
+					"test",
+					"--no-run",
+					"--bin=minecraft-server-sentry",
+					"--package=minecraft-server-sentry"
+				],
+				"filter": {
+					"name": "minecraft-server-sentry",
+					"kind": "bin"
+				}
+			},
+			"args": [],
+			"cwd": "${workspaceFolder}"
+		}
+	]
+}
