@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Result;
 use tokio::{io::AsyncReadExt, net::TcpStream};
 
-use crate::{model::uuid::UUID, types::VarInt};
+use crate::{model::uuid::UUID, packet, types::VarInt};
 
 #[derive(Debug)]
 pub struct Response {
@@ -35,11 +35,11 @@ impl Response {
         VarInt::parse(&mut buf_iter);
         let data: Vec<u8> = buf_iter.cloned().collect();
 
+        /*
         let data_str = std::string::String::from_utf8_lossy(&data);
 
         let response_data_result: Result<ResponseData> = serde_json::from_str(&data_str);
 
-        /*
         let response_data = match response_data_result {
             Ok(d) => d,
             Err(error) => {

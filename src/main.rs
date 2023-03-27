@@ -28,7 +28,7 @@ use tokio::time::Instant;
 use tokio::{join, time};
 
 use crate::model::server::Online;
-use crate::packet::{handshake_packet, status_request_packet};
+use crate::packet::{handshake_status_packet, status_request_packet};
 use crate::{
     model::{player::MinecraftPlayer, server::MinecraftServer},
     response::Response,
@@ -92,28 +92,31 @@ async fn main() {
 
     let (tx, mut rx) = mpsc::channel(1024);
 
-    let handles = hosts.iter().map(|(ip, port)| {
-        let ip = ip.clone();
-        let port = port.clone();
-        let servers = servers.clone();
-        let players = players.clone();
-        let tx = tx.clone();
-        tokio::spawn(async move {
-            tx.send(0u8).await;
+    let handles: Vec<tokio::task::JoinHandle<()>> = hosts
+        .iter()
+        .map(move |(ip, port)| {
+            let ip = ip.clone();
+            let port = port.clone();
+            let servers = servers.clone();
+            let players = players.clone();
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                tx.send(0u8).await;
 
-            let res = match connect(&ip, port).await {
-                Ok(res) => res,
-                Err(_) => {
-                    tx.send(1u8).await;
-                    //println!("{}:{} refused connection!", ip, port);
-                    return;
-                }
-            };
+                let res = match connect(&ip, port).await {
+                    Ok(res) => res,
+                    Err(_) => {
+                        tx.send(1u8).await;
+                        //println!("{}:{} refused connection!", ip, port);
+                        return;
+                    }
+                };
 
-            handle_response(servers, players, res.data).await;
-            tx.send(2u8).await;
+                handle_response(servers, players, res.data).await;
+                tx.send(2u8).await;
+            })
         })
-    });
+        .collect();
 
     let join_task = tokio::spawn(async move {
         futures::future::join_all(handles).await;
@@ -125,7 +128,7 @@ async fn main() {
     let mut progress = 0;
     let mut last = Instant::now();
     while progress < total {
-        let b = rx.blocking_recv().unwrap();
+        let b = rx.recv().await.unwrap();
         match b {
             0u8 => started += 1,
             1u8 => progress += 1,
@@ -157,14 +160,14 @@ async fn connect_database(
 }
 
 async fn connect(ip: &str, port: i16) -> std::io::Result<Response> {
-    println!("Connecting to {}:{}", ip, port);
+    //println!("Connecting to {}:{}", ip, port);
 
     let mut hostname = ip.to_owned();
     hostname.push_str(":");
     hostname.push_str(&port.to_string());
     let mut stream = TcpStream::connect(hostname).await?;
 
-    let handshake_packet = handshake_packet(ip, port);
+    let handshake_packet = handshake_status_packet(ip, port);
     let status_request_packet = status_request_packet();
 
     stream.write(&handshake_packet.to_bytes()).await?;

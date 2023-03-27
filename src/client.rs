@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 
 use tokio::{io::AsyncWriteExt, net::TcpStream};
 
-use crate::model::server::MinecraftServer;
+use crate::{model::server::MinecraftServer, packet::handshake_status_packet};
 
 pub struct MinecraftClient {
     pub stream: Option<TcpStream>,
@@ -18,6 +18,9 @@ impl MinecraftClient {
         let stream = TcpStream::connect(address).await?;
 
         // Initiate connection
+        let handshake_packet =
+            handshake_status_packet(&address.ip().to_string(), address.port() as i16);
+        //stream.write
 
         Ok(())
     }
