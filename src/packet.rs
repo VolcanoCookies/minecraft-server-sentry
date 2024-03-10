@@ -1,15 +1,51 @@
-use std::io::Write;
+use std::{fmt::Debug, io::Cursor, ops::Deref, pin::Pin};
 
-use tokio::{io::AsyncReadExt, net::TcpStream};
+use futures::{future, Future, FutureExt, TryFutureExt};
+use log::trace;
+use tokio::{
+    io::{AsyncRead, AsyncReadExt},
+    net::TcpStream,
+};
+use tracing::instrument;
 
-use crate::types::VarInt;
+use crate::packet_types::{PacketType, VarInt};
 
-pub struct Packet {
+pub trait Packet {
+    const PACKET_ID: i32;
+}
+
+pub trait ClientPacket: Packet
+where
+    Self: Sized,
+    Self: 'static,
+    Self: Packet,
+    Self: Debug,
+{
+    fn deserialize(raw_packet: RawPacket) -> std::io::Result<Self>;
+
+    fn receive(
+        stream: &mut TcpStream,
+    ) -> Pin<Box<dyn Future<Output = std::io::Result<Self>> + '_>> {
+        let raw_packet = RawPacket::from_reader(stream);
+        Box::pin(raw_packet.and_then(|result| future::ready(Self::deserialize(result))))
+    }
+}
+
+pub trait ServerPacket: Packet
+where
+    Self: Sized,
+    Self: Debug,
+{
+    fn serialize(self) -> std::io::Result<RawPacket>;
+}
+
+#[derive(Debug, Clone)]
+pub struct RawPacket {
     pub packet_id: i32,
     pub bytes: Vec<u8>,
 }
 
-impl Packet {
+impl RawPacket {
     pub fn new(packet_id: i32) -> Self {
         Self {
             packet_id,
@@ -17,85 +53,52 @@ impl Packet {
         }
     }
 
-    pub fn writeVarInt(&mut self, int: i32) {
-        self.bytes.append(&mut VarInt::new(int).bytes);
+    pub fn write<P: PacketType>(&mut self, field: P) {
+        field.write(&mut self.bytes);
     }
 
-    pub fn writeString(&mut self, str: &str) {
-        self.writeVarInt(str.len() as i32);
-        self.bytes.append(&mut str.as_bytes().to_vec());
+    pub fn write_vec<P: PacketType>(&mut self, fields: Vec<P>) {
+        P::write_array(fields, &mut self.bytes);
     }
 
-    pub fn writeShort(&mut self, short: i16) {
-        self.bytes.write(&short.to_be_bytes());
+    pub fn cursor(self) -> Cursor<Vec<u8>> {
+        Cursor::new(self.bytes)
     }
 
-    pub fn writeByte(&mut self, byte: u8) {
-        self.bytes.push(byte);
+    pub fn to_bytes(self) -> Vec<u8> {
+        let packet_id = VarInt(self.packet_id);
+
+        let data = [packet_id.to_bytes(), self.bytes].concat();
+        let len = VarInt(data.len() as i32);
+
+        [len.to_bytes(), data].concat()
     }
 
-    pub fn writeBool(&mut self, b: bool) {
-        if b {
-            self.writeByte(0x01);
-        } else {
-            self.writeByte(0x00);
+    #[instrument]
+    pub async fn from_reader<R: AsyncRead + Unpin + Debug>(
+        reader: &mut R,
+    ) -> std::io::Result<RawPacket> {
+        trace!("Reading packet from stream");
+        let len = VarInt::read_async(reader).await?;
+        trace!("Packet length: {}", len);
+
+        let mut data = vec![0; len as usize];
+        reader.read_exact(&mut data).await?;
+
+        let mut cursor = Cursor::new(data);
+
+        let packet_id = VarInt::read(&mut cursor)?;
+        trace!("Packet ID: {}", packet_id);
+        let mut bytes = Vec::new();
+        match std::io::Read::read_to_end(&mut cursor, &mut bytes) {
+            Ok(_) => (),
+            Err(e) => {
+                trace!("Error reading packet: {:?}", e);
+                return Err(e);
+            }
         }
-    }
-
-    pub fn to_bytes(mut self) -> Vec<u8> {
-        let mut bytes = Vec::<u8>::new();
-
-        bytes.append(&mut VarInt::new(self.packet_id).bytes);
-        bytes.append(&mut self.bytes);
-
-        [VarInt::new(bytes.len() as i32).bytes, bytes].concat()
-    }
-
-    pub async fn from_stream(stream: &mut TcpStream) -> std::io::Result<Packet> {
-        let len = VarInt::parse_from_stream(stream).await?;
-        let mut data = Vec::with_capacity(len as usize);
-
-        stream.read_exact(&mut data).await?;
-        let mut data_iter = data.iter();
-
-        let packet_id = VarInt::parse(&mut data_iter);
-        let bytes = data_iter.cloned().collect();
+        trace!("Packet bytes: {:?}", bytes.clone());
 
         Ok(Self { packet_id, bytes })
     }
-}
-
-pub fn handshake_status_packet(ip: &str, port: i16) -> Packet {
-    handskake_packet(ip, port, 1)
-}
-
-pub fn handshake_login_packet(ip: &str, port: i16) -> Packet {
-    handskake_packet(ip, port, 2)
-}
-
-pub fn handskake_packet(ip: &str, port: i16, next_state: i32) -> Packet {
-    let mut packet = Packet::new(0);
-
-    packet.writeVarInt(-1);
-    packet.writeString(ip);
-    packet.writeShort(port);
-    packet.writeVarInt(next_state);
-
-    packet
-}
-
-pub fn status_request_packet() -> Packet {
-    let mut packet = Packet::new(0);
-
-    packet
-}
-
-pub fn login_start(username: &str, uuid: &str) -> Packet {
-    let mut packet = Packet::new(0);
-
-    packet.writeString(username);
-    packet.writeBool(true);
-    packet.writeString(uuid);
-
-    packet
 }

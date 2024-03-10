@@ -1,10 +1,12 @@
-use std::{error::Error, fs::File, io::Write};
+use std::io::{Cursor, Read};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Result;
 use tokio::{io::AsyncReadExt, net::TcpStream};
 
-use crate::{model::uuid::UUID, packet, types::VarInt};
+use crate::{
+    model::uuid::UUID,
+    packet_types::{PacketType, VarInt},
+};
 
 #[derive(Debug)]
 pub struct Response {
@@ -15,42 +17,22 @@ pub struct Response {
 
 impl Response {
     pub async fn read(stream: &mut TcpStream) -> std::io::Result<Self> {
-        let mut pre_buf = [0u8; 5];
-        stream.read_exact(&mut pre_buf).await?;
+        //       let mut pre_buf = [0u8; 5];
+        //        stream.read_exact(&mut pre_buf).await?;
 
-        let mut pre_buf_iter = pre_buf.iter();
-        let len = VarInt::parse(&mut pre_buf_iter) as usize;
-        let extra = pre_buf_iter.len();
+        let len = VarInt::read_async(stream).await? as usize;
 
-        let mut rest = vec![0; len - extra];
-        stream.read_exact(&mut rest).await?;
+        let mut buf = vec![0; len];
+        stream.read_exact(&mut buf).await?;
 
-        let mut buf = Vec::<u8>::new();
-        buf.append(&mut pre_buf_iter.cloned().collect::<Vec<u8>>());
-        buf.append(&mut rest);
+        let mut cursor = Cursor::new(&buf);
 
-        let mut buf_iter = buf.iter();
-        let packet_id = VarInt::parse(&mut buf_iter);
-        // The rest of the packet is a string so we need to read the length of it but can ignore it
-        VarInt::parse(&mut buf_iter);
-        let data: Vec<u8> = buf_iter.cloned().collect();
+        let packet_id = VarInt::read(&mut cursor)?;
+        let data_len = VarInt::read(&mut cursor)? as usize;
+        let mut data_buf = vec![0; data_len];
+        tokio::io::AsyncReadExt::read_exact(&mut cursor, &mut data_buf).await?;
 
-        /*
-        let data_str = std::string::String::from_utf8_lossy(&data);
-
-        let response_data_result: Result<ResponseData> = serde_json::from_str(&data_str);
-
-        let response_data = match response_data_result {
-            Ok(d) => d,
-            Err(error) => {
-                let err_file = File::create(stream.peer_addr().unwrap().ip().to_string());
-                err_file.unwrap().write_all(&data);
-                panic!("{}", error);
-            }
-        };
-         */
-
-        let response_data: ResponseData = serde_json::from_slice(data.as_slice())?;
+        let response_data: ResponseData = serde_json::from_slice(data_buf.as_slice())?;
 
         /*
         if stream

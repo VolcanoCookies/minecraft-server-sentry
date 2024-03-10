@@ -12,3 +12,25 @@ serde_json = "1.0.94"
 tokio = { version = "1.26.0", features = ["macros", "rt-multi-thread"] }
 futures = "0.3.27"
 kdam = "0.3.0"
+rand = "*"
+cfb8 = "0.8.1"
+rsa = "*"
+rsa-der = "*"
+packet_macros = { path = "packet_macros" }
+byteorder = "*"
+indicatif = "0.17.8"
+log = "0.4.21"
+indicatif-log-bridge = "0.2.2"
+simple_logger = "4.3.3"
+time = "0.3.34"
+
+tracing = "0.1.40"
+tracing-subscriber = "0.3.18"
+tracing-opentelemetry = "0.22.0"
+
+opentelemetry = "0.22"
+opentelemetry_sdk = "0.22.1"
+opentelemetry-stdout = { version = "0.3.0", features = ["trace"] }
+opentelemetry-jaeger = "0.21.0"
+sha1 = "0.10.6"
+reqwest = { version = "0.11.24", features = ["json"] }

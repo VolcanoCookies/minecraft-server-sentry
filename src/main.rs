@@ -1,18 +1,22 @@
 pub mod client;
 pub mod model;
+mod mojang;
 pub mod packet;
+pub mod packet_types;
 pub mod response;
-pub mod types;
 
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::net::{Ipv4Addr, SocketAddrV4};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::io::{stdout, BufRead, BufReader, Stdout};
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
+use client::MinecraftClient;
 use futures::future::join_all;
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
+use indicatif::MultiProgress;
 use kdam::term::Colorizer;
 use kdam::{tqdm, BarExt, Column, RichProgress};
 use model::player::{HistoricPlayer, OnlinePlayer};
@@ -20,12 +24,20 @@ use mongodb::bson::{doc, to_bson, DateTime};
 use mongodb::options::UpdateOptions;
 use mongodb::Client;
 use mongodb::Collection;
+use opentelemetry::global::GlobalTracerProvider;
+use opentelemetry::trace::TracerProvider;
+use opentelemetry_stdout::SpanExporter;
 use response::ResponseData;
+use simple_logger::SimpleLogger;
+use time::macros::format_description;
 use tokio::io::AsyncWriteExt;
+use tokio::join;
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Semaphore};
 use tokio::time::Instant;
-use tokio::{join, time};
+use tracing::Level;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::Registry;
 
 use crate::model::server::Online;
 use crate::packet::{handshake_status_packet, status_request_packet};
@@ -36,6 +48,38 @@ use crate::{
 
 #[tokio::main]
 async fn main() {
+    let collector = tracing_subscriber::fmt()
+        // filter spans/events with level TRACE or higher.
+        .with_max_level(Level::TRACE)
+        // build but do not install the subscriber.
+        .init();
+    /*
+    // Create a new OpenTelemetry trace pipeline that prints to stdout
+    let provider = opentelemetry_sdk::trace::TracerProvider::builder()
+        .with_simple_exporter(SpanExporter::default())
+        .build();
+    let tracer = provider.tracer("readme_example");
+
+    // Create a tracing layer with the configured tracer
+    let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
+
+    // Use the tracing subscriber `Registry`, or any other subscriber
+    // that impls `LookupSpan`
+    let subscriber = Registry::default().with(telemetry);
+    */
+
+    let logger = SimpleLogger::new()
+        .env()
+        .with_level(log::LevelFilter::Info)
+        .with_module_level("serenity", log::LevelFilter::Warn)
+        .with_module_level("tracing", log::LevelFilter::Warn)
+        .with_timestamp_format(format_description!(
+            "[[[year]-[month]-[day] [hour]:[minute]:[second]]"
+        ));
+    let multi = MultiProgress::new();
+
+    //LogWrapper::new(multi.clone(), logger).try_init().unwrap();
+
     let mut pb = RichProgress::new(
         tqdm!(
             total = 231231231,
@@ -62,20 +106,33 @@ async fn main() {
         ],
     );
 
+    let ip_addr = std::net::IpAddr::V4(Ipv4Addr::new(91, 134, 157, 209));
+    let port = 25602;
+    let addr = SocketAddr::new(ip_addr, port);
+    let mut client = MinecraftClient::new();
+    let res = client.connect(addr).await;
+
+    if let Err(err) = res {
+        eprintln!("Error connecting to server: {}", err);
+        return;
+    }
+
+    unreachable!("This code is unreachable");
+
     pb.write("Connecting to mongodb".colorize("bold red"));
 
-    let (servers, players) = connect_database(
-        "mongodb://root:antek2015@localhost:27017/admin",
-        "minecraft-server-entry",
-    )
-    .await;
+    let mongo_url = std::env::var("MONGO_URL")
+        .unwrap_or("mongodb://root:antek2015@localhost:27017/admin".to_owned());
+    let database_name =
+        std::env::var("DATABASE_NAME").unwrap_or("minecraft-server-sentry".to_owned());
+
+    let (servers, players) = connect_database(&mongo_url, &database_name).await;
 
     pb.write("Connected to mongodb".colorize("bold green"));
 
+    pb.write("Collecting ips".colorize("bold red"));
     let file = File::open("./masscan-out.txt").unwrap();
     let reader = BufReader::new(file).lines();
-
-    pb.write("Collecting ips".colorize("bold red"));
 
     let mut hosts = Vec::<(String, i16)>::new();
     for line in reader {
@@ -87,39 +144,40 @@ async fn main() {
     }
 
     let total = hosts.len() as i32;
+    pb.pb.set_total(total as usize);
 
     pb.write(format!("Collected {} ips", total).colorize("bold green"));
 
     let (tx, mut rx) = mpsc::channel(1024);
 
-    let handles: Vec<tokio::task::JoinHandle<()>> = hosts
-        .iter()
-        .map(move |(ip, port)| {
-            let ip = ip.clone();
-            let port = port.clone();
+    let semaphore = Arc::new(Semaphore::new(10000));
+    let mut tasks = FuturesUnordered::new();
+    let handle = tokio::spawn(async move {
+        for (ip, port) in hosts.into_iter() {
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
             let servers = servers.clone();
             let players = players.clone();
             let tx = tx.clone();
-            tokio::spawn(async move {
+            tasks.push(tokio::spawn(async move {
                 tx.send(0u8).await;
-
                 let res = match connect(&ip, port).await {
-                    Ok(res) => res,
+                    Ok(res) => {
+                        println!("{}:{} accepted the connection!", ip, port);
+                        res
+                    }
                     Err(_) => {
                         tx.send(1u8).await;
-                        //println!("{}:{} refused connection!", ip, port);
+                        println!("{}:{} refused connection!", ip, port);
                         return;
                     }
                 };
-
                 handle_response(servers, players, res.data).await;
                 tx.send(2u8).await;
-            })
-        })
-        .collect();
+                drop(permit);
+            }));
+        }
 
-    let join_task = tokio::spawn(async move {
-        futures::future::join_all(handles).await;
+        while let Some(_) = tasks.next().await {}
     });
 
     pb.write("Scanning servers".colorize("bold blue"));
@@ -135,13 +193,13 @@ async fn main() {
             2u8 => progress += 1,
             _ => {}
         }
-        if last.elapsed().as_millis() > 200 {
+        if last.elapsed().as_millis() > 50 {
             last = Instant::now();
             pb.update_to(progress as usize);
         }
     }
 
-    join_task.await;
+    let _ = handle.await;
 
     pb.write("Finished scanning servers".colorize("bold green"));
 }
@@ -165,16 +223,24 @@ async fn connect(ip: &str, port: i16) -> std::io::Result<Response> {
     let mut hostname = ip.to_owned();
     hostname.push_str(":");
     hostname.push_str(&port.to_string());
-    let mut stream = TcpStream::connect(hostname).await?;
+
+    let timeout = tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(hostname)).await;
+
+    let mut stream = match timeout {
+        Ok(Ok(stream)) => stream,
+        Ok(Err(err)) => return Err(err),
+        Err(_) => return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "timeout")),
+    };
 
     let handshake_packet = handshake_status_packet(ip, port);
     let status_request_packet = status_request_packet();
 
-    stream.write(&handshake_packet.to_bytes()).await?;
-    stream.write(&status_request_packet.to_bytes()).await?;
+    stream.write_all(&handshake_packet.to_bytes()).await?;
+    stream.write_all(&status_request_packet.to_bytes()).await?;
     stream.flush().await?;
 
     let mut res = Response::read(&mut stream).await?;
+
     res.data.host = ip.to_owned();
     res.data.port = port;
 
