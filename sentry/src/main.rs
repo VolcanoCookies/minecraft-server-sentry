@@ -1,41 +1,28 @@
-pub mod client;
 pub mod model;
-pub mod packet;
-pub mod response;
-pub mod types;
 
-use std::collections::HashSet;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::net::{Ipv4Addr, SocketAddrV4};
-use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
-use futures::future::join_all;
-use kdam::term::Colorizer;
-use kdam::{tqdm, BarExt, Column, RichProgress};
-use model::player::{HistoricPlayer, OnlinePlayer};
-use mongodb::bson::{doc, to_bson, DateTime};
-use mongodb::options::UpdateOptions;
-use mongodb::Client;
-use mongodb::Collection;
-use response::ResponseData;
-use tokio::io::AsyncWriteExt;
-use tokio::net::TcpStream;
-use tokio::sync::mpsc;
-use tokio::time::Instant;
-use tokio::{join, time};
-
-use crate::model::server::Online;
-use crate::packet::{handshake_status_packet, status_request_packet};
-use crate::{
-    model::{player::MinecraftPlayer, server::MinecraftServer},
-    response::Response,
-};
+use client::MinecraftClient;
+use kdam::{tqdm, Column, RichProgress};
+use log::info;
+use tracing_subscriber::layer::SubscriberExt;
 
 #[tokio::main]
 async fn main() {
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::registry().with(tracing_tracy::TracyLayer::default()),
+    )
+    .expect("setup tracy layer");
+
+    simple_logger::SimpleLogger::new().env().init().unwrap();
+
+    /* let subscriber = tracing_subscriber::fmt()
+        // filter spans/events with level TRACE or higher.
+        .with_max_level(Level::TRACE)
+        // build but do not install the subscriber.
+        .finish();
+    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed"); */
+
     let mut pb = RichProgress::new(
         tqdm!(
             total = 231231231,
@@ -62,9 +49,27 @@ async fn main() {
         ],
     );
 
-    pb.write("Connecting to mongodb".colorize("bold red"));
+    let mut client = MinecraftClient::unauthenticated();
+    let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 25565));
+    let protocol_version = 769;
 
-    let (servers, players) = connect_database(
+    let connection = client
+        .connect(addr, protocol_version)
+        .await
+        .expect("Failed to connect");
+
+    let status = connection.status().await.expect("Failed to get status");
+    info!("Server status: {:?}", status);
+
+    let connection = client
+        .connect(addr, protocol_version)
+        .await
+        .expect("Failed to connect");
+    connection.login().await.expect("Failed to login");
+
+    /* pb.write("Connecting to mongodb".colorize("bold red")); */
+
+    /* let (servers, players) = connect_database(
         "mongodb://root:antek2015@localhost:27017/admin",
         "minecraft-server-entry",
     )
@@ -143,20 +148,13 @@ async fn main() {
 
     join_task.await;
 
-    pb.write("Finished scanning servers".colorize("bold green"));
+    pb.write("Finished scanning servers".colorize("bold green")); */
 }
 
-async fn connect_database(
-    uri: &str,
-    database_name: &str,
-) -> (Collection<MinecraftServer>, Collection<MinecraftPlayer>) {
-    let mongo = Client::with_uri_str(uri).await.unwrap();
-    let database = mongo.database(database_name);
-
-    let servers = database.collection::<MinecraftServer>("servers");
-    let players = database.collection::<MinecraftPlayer>("players");
-
-    (servers, players)
+/* async fn connect_database_sqlite(uri: &str, database_name: &str) -> SqliteClient {
+    welds::connections::sqlite::connect(uri)
+        .await
+        .expect("Failed to connect to sqlite")
 }
 
 async fn connect(ip: &str, port: i16) -> std::io::Result<Response> {
@@ -216,7 +214,7 @@ async fn handle_response(
     for online_player in &online.list {
         let key = format!("historic_players.{}", online_player.uuid.0);
         let historic_player = HistoricPlayer {
-            uuid: online_player.uuid.clone(),
+            player_uuid: online_player.uuid.clone(),
             last_seen: DateTime::now(),
         };
         set.insert(key, to_bson(&historic_player).unwrap());
@@ -266,3 +264,4 @@ async fn handle_response(
 
     Ok(())
 }
+ */

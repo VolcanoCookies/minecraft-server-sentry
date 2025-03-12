@@ -1,0 +1,29 @@
+[package]
+name = "sentry"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { workspace = true }
+kdam = "0.3.0"
+sqlx = { version = "0.8.3", features = [
+    "runtime-tokio",
+    "sqlite",
+    "derive",
+    "macros",
+    "uuid",
+    "chrono",
+    "json",
+] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { version = "0.4.40", features = ["serde"] }
+welds = { version = "0.4.11", features = ["migrations", "sqlite"] }
+packet = { path = "../packet" }
+protocol = { path = "../protocol" }
+client = { path = "../client" }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-tracy = { workspace = true }
+log = "0.4.26"
+simple_logger = "5.0.0"

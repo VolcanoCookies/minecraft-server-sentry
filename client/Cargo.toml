@@ -1,0 +1,11 @@
+[package]
+name = "client"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+packet = { path = "../packet" }
+protocol = { path = "../protocol" }
+tracing = { workspace = true }
+tokio = { workspace = true }
+log = "0.4.26"
