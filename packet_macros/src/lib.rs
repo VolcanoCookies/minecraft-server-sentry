@@ -3,13 +3,14 @@ mod attrs;
 use std::fmt::Display;
 
 use attrs::{parse_field_attrs, PacketOpts};
+use convert_case::Casing;
 use proc_macro::TokenStream;
 use quote::{quote, ToTokens};
 use syn::{self, spanned::Spanned, Field};
 
 extern crate proc_macro;
 
-#[proc_macro_derive(Packet, attributes(packet_id, packet_state, packet))]
+#[proc_macro_derive(Packet, attributes(packet_id, packet_state, packet_direction, packet))]
 pub fn packet_derive(input: TokenStream) -> proc_macro::TokenStream {
     let ast = syn::parse(input).expect("Failed to parse input");
 
@@ -187,11 +188,37 @@ fn impl_packet_derive(
         }
     };
 
+    let packet_direction = ast.attrs.iter().find_map(|attr| {
+        if attr.path().is_ident("packet_direction") {
+            attr.parse_args::<syn::Variant>().ok()
+        } else {
+            None
+        }
+    });
+    let packet_direction = match packet_direction {
+        Some(direction) => direction.ident,
+        _ => {
+            return spanned_error(ast, "packet_direction attribute is required");
+        }
+    };
+
+    let upper_snake = name.to_string().to_case(convert_case::Case::Constant);
+    let descriptor_ident = syn::Ident::new(&format!("_{}_DESCRIPTOR", upper_snake), name.span());
+
     let gen = quote! {
+        #[linkme::distributed_slice(packet::registry::PACKET_REGISTRY)]
+        static #descriptor_ident: packet::registry::PacketDescriptor = packet::registry::PacketDescriptor {
+            id: #packet_id,
+            state: packet::ConnectionState::#packet_state,
+            name: stringify!(#name),
+            direction: packet::PacketDirection::#packet_direction,
+        };
+
         impl packet::Packet for #name {
 
             const PACKET_ID: i32 = #packet_id;
             const PACKET_STATE: packet::ConnectionState = packet::ConnectionState::#packet_state;
+            const PACKET_DIRECTION: packet::PacketDirection = packet::PacketDirection::#packet_direction;
 
             // Read and validate packet id, then read as regular struct
             fn read_packet<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
@@ -333,9 +360,7 @@ fn impl_packet_writable_derive(
 
     match &opts {
         PacketOpts::Struct { .. } => {}
-        PacketOpts::Enum { .. } => {
-            dbg!(&opts);
-        }
+        PacketOpts::Enum { .. } => {}
     }
 
     match &opts {

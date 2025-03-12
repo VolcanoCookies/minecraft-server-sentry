@@ -12,3 +12,4 @@ syn = "2.0.99"
 packet = { path = "../packet" }
 proc-macro2 = "1.0.94"
 darling = "0.20.10"
+convert_case = "0.8.0"

@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Packet, Debug)]
 #[packet_id(0x01)]
 #[packet_state(Login)]
+#[packet_direction(Clientbound)]
 pub struct EncryptionRequestPacket {
     pub server_id: String,
     pub public_key: Vec<u8>,
@@ -15,6 +16,7 @@ pub struct EncryptionRequestPacket {
 #[derive(Packet, Debug)]
 #[packet_id(0x02)]
 #[packet_state(Login)]
+#[packet_direction(Clientbound)]
 pub struct LoginSuccessPacket {
     pub uuid: UUID,
     pub username: String,
@@ -33,6 +35,7 @@ pub struct Property {
 #[derive(Packet, Debug)]
 #[packet_id(0x00)]
 #[packet_state(Status)]
+#[packet_direction(Clientbound)]
 pub struct StatusResponsePacket {
     pub json: StatusResponseJson,
 }
@@ -79,6 +82,7 @@ pub enum Description {
 #[derive(Packet, Debug)]
 #[packet_id(0x03)]
 #[packet_state(Login)]
+#[packet_direction(Clientbound)]
 pub struct SetCompressionPacket {
     #[packet(repr = "VarInt")]
     pub threshold: i32,
@@ -87,11 +91,13 @@ pub struct SetCompressionPacket {
 #[derive(Packet, Debug)]
 #[packet_id(0x03)]
 #[packet_state(Configuration)]
+#[packet_direction(Clientbound)]
 pub struct FinishConfigurationPacket {}
 
 #[derive(Packet, Debug)]
 #[packet_id(0x00)]
 #[packet_state(Login)]
+#[packet_direction(Clientbound)]
 pub struct DisconnectPacket {
     pub reason: String,
 }

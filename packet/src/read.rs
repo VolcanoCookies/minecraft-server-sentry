@@ -2,8 +2,10 @@ use std::io::Read;
 
 use crate::types::VarInt;
 
-pub trait PacketReadable: Sized {
-    fn read<R: Read>(reader: &mut R) -> std::io::Result<Self>;
+pub trait PacketReadable {
+    fn read<R: Read>(reader: &mut R) -> std::io::Result<Self>
+    where
+        Self: Sized;
 }
 
 impl PacketReadable for u8 {

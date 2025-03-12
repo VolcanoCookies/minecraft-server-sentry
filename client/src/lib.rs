@@ -10,8 +10,8 @@ use std::{
 
 use async_read_write::{AsyncPacketReadable, AsyncPacketWritable};
 use packet::{
-    raw::RawPacket, read::PacketReadable, types::VarInt, write::PacketWritable, ConnectionState,
-    Packet,
+    raw::RawPacket, read::PacketReadable, registry::get_packet, types::VarInt,
+    write::PacketWritable, ConnectionState, Packet, PacketDirection,
 };
 use protocol::clientbound::{DisconnectPacket, StatusResponseJson};
 use stream::CountingStream;
@@ -88,11 +88,16 @@ impl Connection {
                 match Self::read_packet_raw_static(&mut read_stream).await {
                     Ok(packet) => {
                         let state = read_state.get();
-                        log::debug!(
-                            "Received packet id {} in state {:?}",
-                            packet.packet_id,
-                            state
-                        );
+
+                        match get_packet(packet.packet_id, state, PacketDirection::Clientbound) {
+                            Some(descriptor) => {
+                                log::debug!("Received packet: {:?}", descriptor.name);
+                            }
+                            None => {
+                                log::debug!("Received unknown packet: {:?}", packet.packet_id);
+                            }
+                        }
+
                         read_packet_tx
                             .send((state, packet))
                             .expect("Failed to send packet");
@@ -110,18 +115,28 @@ impl Connection {
 
         let (writer_tx, mut reader_rx) = tokio::sync::mpsc::channel::<RawPacket>(1024);
 
+        let write_state = state.clone();
         let write_future = async move {
             let mut write_stream = CountingStream::new(write_half);
             loop {
                 match reader_rx.recv().await {
                     Some(packet) => {
+                        let state = write_state.get();
+                        match get_packet(packet.packet_id, state, PacketDirection::Serverbound) {
+                            Some(descriptor) => {
+                                log::debug!("Sending packet: {:?}", descriptor.name);
+                            }
+                            None => {
+                                log::debug!("Sending unknown packet: {:?}", packet.packet_id);
+                            }
+                        }
+
                         let mut buf = Vec::new();
                         packet.write(&mut buf).expect("Failed to write packet");
                         let len = VarInt(buf.len() as i32);
                         <VarInt as AsyncPacketWritable>::write(len, &mut write_stream)
                             .await
                             .expect("Failed to write packet length");
-                        log::trace!("Writing packet: {:?}", packet.bytes);
                         write_stream
                             .write_all(&buf)
                             .await
@@ -202,11 +217,6 @@ impl Connection {
         self.state.set(ConnectionState::Login);
         let login_start = protocol::serverbound::LoginStartPacket::new("volcano", 0u128.into());
         self.send_packet(login_start).await?;
-
-        let raw = self.from_reader_tx.subscribe().recv().await;
-        log::debug!("Received raw packet: {:?}", raw);
-        let disconnect = DisconnectPacket::read(&mut raw.unwrap().1.bytes.as_slice())?;
-        log::debug!("Disconnect: {:?}", disconnect.reason);
 
         let success = self
             .wait_for::<protocol::clientbound::LoginSuccessPacket>()

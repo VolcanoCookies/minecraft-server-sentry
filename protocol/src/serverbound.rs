@@ -12,6 +12,7 @@ pub enum HandshakeNextState {
 #[derive(Packet, Debug)]
 #[packet_id(0x00)]
 #[packet_state(Handshaking)]
+#[packet_direction(Serverbound)]
 pub struct HandshakePacket {
     #[packet(repr = "VarInt")]
     pub protocol_version: i32,
@@ -39,6 +40,7 @@ impl HandshakePacket {
 #[derive(Packet, Debug)]
 #[packet_id(0x00)]
 #[packet_state(Status)]
+#[packet_direction(Serverbound)]
 pub struct StatusRequestPacket {}
 
 impl StatusRequestPacket {
@@ -50,6 +52,7 @@ impl StatusRequestPacket {
 #[derive(Packet, Debug)]
 #[packet_id(0x01)]
 #[packet_state(Status)]
+#[packet_direction(Serverbound)]
 pub struct PingRequestPacket {
     pub timestamp: i64,
 }
@@ -63,6 +66,7 @@ impl PingRequestPacket {
 #[derive(Packet, Debug)]
 #[packet_id(0x01)]
 #[packet_state(Login)]
+#[packet_direction(Serverbound)]
 pub struct EncryptionResponsePacket {
     pub shared_secret: Vec<u8>,
     pub verify_token: Vec<u8>,
@@ -80,6 +84,7 @@ impl EncryptionResponsePacket {
 #[derive(Packet, Debug)]
 #[packet_id(0x03)]
 #[packet_state(Login)]
+#[packet_direction(Serverbound)]
 pub struct LoginAcknowledgedPacket {}
 
 impl LoginAcknowledgedPacket {
@@ -89,8 +94,9 @@ impl LoginAcknowledgedPacket {
 }
 
 #[derive(Packet, Debug)]
-#[packet_id(0x01)]
+#[packet_id(0x00)]
 #[packet_state(Login)]
+#[packet_direction(Serverbound)]
 pub struct LoginStartPacket {
     pub name: String,
     pub uuid: UUID,

@@ -2,7 +2,7 @@ use std::io::Write;
 
 use crate::types::VarInt;
 
-pub trait PacketWritable: Sized {
+pub trait PacketWritable {
     fn write<W: Write>(&self, writer: &mut W) -> std::io::Result<()>;
 }
 
