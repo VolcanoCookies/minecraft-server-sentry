@@ -1,0 +1,12 @@
+services:
+  minecraft-server:
+    image: itzg/minecraft-server
+    ports:
+      - "25565:25565"
+    environment:
+      EULA: "TRUE"
+      VERSION: "1.21.4"
+      INIT_MEMORY: "2G"
+      MEMORY: "2G"
+      MAX_MEMORY: "2G"
+      ONLINE_MODE: "FALSE"

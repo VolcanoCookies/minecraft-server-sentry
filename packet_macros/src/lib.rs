@@ -2,11 +2,13 @@ mod attrs;
 
 use std::fmt::Display;
 
-use attrs::{parse_field_attrs, PacketOpts};
+use attrs::{parse_field_attrs, FieldVecLen, PacketOpts};
 use convert_case::Casing;
 use proc_macro::TokenStream;
 use quote::{quote, ToTokens};
-use syn::{self, spanned::Spanned, Field};
+use syn::{self, spanned::Spanned, Field, Fields};
+
+use crate::attrs::{EnumPacketOpts, FieldCondition};
 
 extern crate proc_macro;
 
@@ -56,6 +58,7 @@ fn spanned_error<T: ToTokens, D: Display>(
 // (ident, reader, writer)
 fn field_parser(
     field: &Field,
+    prefix: Option<&str>,
 ) -> Result<
     (
         proc_macro2::TokenStream,
@@ -81,11 +84,15 @@ fn field_parser(
     }
 
     let ident = field.ident.as_ref().unwrap();
+    let prefix: proc_macro2::TokenStream = match prefix {
+        Some(p) => p.parse().unwrap(),
+        None => quote! {},
+    };
     let ty = &field.ty;
 
     let opts = parse_field_attrs(field)?;
 
-    match ty {
+    let (ident, mut reader, writer) = match ty {
         syn::Type::Path(ty) => {
             let ident = ident.to_token_stream();
             if let Some(repr) = opts.repr {
@@ -95,24 +102,104 @@ fn field_parser(
                     let #ident = #ident_raw.into();
                 };
                 let writer = quote! {
-                    let #ident_raw: #repr = self.#ident.into();
+                    let #ident_raw: #repr = (*#prefix #ident).into();
                     packet::write::PacketWritable::write(&#ident_raw, &mut raw)?;
                 };
 
-                return Ok((ident, reader, writer));
+                (ident, reader, writer)
+            } else if let Some(FieldVecLen::Rest) = opts.len {
+                let ident_greedy = syn::Ident::new(&format!("{}_greedy", ident), ident.span());
+                let inner_ty = match ty
+                    .path
+                    .segments
+                    .first()
+                    .expect("Segment missing")
+                    .ident
+                    .to_string()
+                    .as_str()
+                {
+                    "Vec" => {
+                        let inner = &ty
+                            .path
+                            .segments
+                            .first()
+                            .expect("Segment argument")
+                            .arguments;
+                        match inner {
+                            syn::PathArguments::AngleBracketed(args) => {
+                                let inner = args.args.first().expect("Expected inner type");
+                                match inner {
+                                    syn::GenericArgument::Type(ty) => ty,
+                                    _ => {
+                                        return spanned_error(
+                                            inner,
+                                            "expected type argument for Vec",
+                                        );
+                                    }
+                                }
+                            }
+                            _ => {
+                                return spanned_error(inner, "expected angle bracketed arguments");
+                            }
+                        }
+                    }
+                    _ => {
+                        return spanned_error(ty, "expected Vec type");
+                    }
+                };
+
+                let reader = quote! {
+                    let #ident_greedy: packet::types::GreedyVec<#inner_ty> = packet::read::PacketReadable::read(&mut raw)?;
+                    let #ident = #ident_greedy.0;
+                };
+                // Prefix is reference, so we dereference it immediately
+                let writer = quote! {
+                    let #ident_greedy = packet::types::GreedyVec((*#prefix #ident).clone());
+                    packet::write::PacketWritable::write(&#ident_greedy, &mut raw)?;
+                };
+
+                (ident, reader, writer)
             } else {
                 let reader = quote! {
                     let #ident: #ty = packet::read::PacketReadable::read(&mut raw)?;
                 };
                 let writer = quote! {
-                    packet::write::PacketWritable::write(&self.#ident, &mut raw)?;
+                    packet::write::PacketWritable::write(#prefix #ident, &mut raw)?;
                 };
 
-                return Ok((ident, reader, writer));
+                (ident, reader, writer)
             }
         }
-        _ => spanned_error(ty, format!("unsupported field type {:?}", ty)),
+        _ => return spanned_error(ty, format!("unsupported field type {:?}", ty)),
+    };
+
+    if let Some(cond) = opts.cond {
+        match cond {
+            FieldCondition::Prefixed => {
+                reader = quote! {
+                    let present: bool = packet::read::PacketReadable::read(&mut raw)?;
+                    let #ident = if present {
+                        #reader
+                        #ident
+                    } else {
+                        None
+                    };
+                };
+            }
+            FieldCondition::Condition(expr) => {
+                reader = quote! {
+                    let #ident = if #expr {
+                        #reader
+                        #ident
+                    } else {
+                        None
+                    };
+                };
+            }
+        }
     }
+
+    Ok((ident, reader, writer))
 }
 
 type FieldParserResult = Result<
@@ -132,25 +219,49 @@ fn extract_fields(ast: &syn::DeriveInput) -> FieldParserResult {
     }
 
     if let syn::Data::Struct(data) = &ast.data {
-        if let syn::Fields::Named(fields) = &data.fields {
-            let fields = fields.named.iter().map(field_parser).collect::<Vec<_>>();
-            let mut idents = Vec::new();
-            let mut readers = Vec::new();
-            let mut writers = Vec::new();
-
-            for field in fields {
-                let (ident, reader, writer) = field?;
-                idents.push(ident);
-                readers.push(reader);
-                writers.push(writer);
-            }
-
-            Ok((idents, readers, writers))
-        } else {
-            spanned_error(ast, "expected named fields")
-        }
+        return named_fields_parser(&data.fields, Some("&self.")).map_err(|err| err.into());
     } else {
         spanned_error(ast, "expected struct")
+    }
+}
+
+fn named_fields_parser(
+    fields: &Fields,
+    prefix: Option<&str>,
+) -> Result<
+    (
+        Vec<proc_macro2::TokenStream>,
+        Vec<proc_macro2::TokenStream>,
+        Vec<proc_macro2::TokenStream>,
+    ),
+    proc_macro2::TokenStream,
+> {
+    fn spanned_error<T: ToTokens, D: Display>(tokens: T, message: D) -> FieldParserResult {
+        Err(syn::Error::new_spanned(tokens, message)
+            .to_compile_error()
+            .into())
+    }
+
+    if let syn::Fields::Named(fields) = &fields {
+        let fields = fields
+            .named
+            .iter()
+            .map(|f| field_parser(f, prefix))
+            .collect::<Vec<_>>();
+        let mut idents = Vec::new();
+        let mut readers = Vec::new();
+        let mut writers = Vec::new();
+
+        for field in fields {
+            let (ident, reader, writer) = field?;
+            idents.push(ident);
+            readers.push(reader);
+            writers.push(writer);
+        }
+
+        Ok((idents, readers, writers))
+    } else {
+        spanned_error(fields, "expected named fields")
     }
 }
 
@@ -205,27 +316,69 @@ fn impl_packet_derive(
     let upper_snake = name.to_string().to_case(convert_case::Case::Constant);
     let descriptor_ident = syn::Ident::new(&format!("_{}_DESCRIPTOR", upper_snake), name.span());
 
-    let gen = quote! {
-        #[linkme::distributed_slice(packet::registry::PACKET_REGISTRY)]
-        static #descriptor_ident: packet::registry::PacketDescriptor = packet::registry::PacketDescriptor {
+    let descriptor = quote! {
+        packet::registry::PacketDescriptor {
             id: #packet_id,
             state: packet::ConnectionState::#packet_state,
             name: stringify!(#name),
             direction: packet::PacketDirection::#packet_direction,
+            read_fn: |mut reader| {
+                let res = <#name as packet::read::PacketReadable>::read(&mut reader);
+                match res {
+                    Ok(packet) => Ok(Box::new(packet)),
+                    Err(e) => Err(e),
+                }
+            },
+            write_fn: |packet, mut writer| {
+                let coerced = packet.into_any();
+                let packet = match coerced.downcast::<#name>() {
+                    Ok(packet) => *packet,
+                    Err(_) => return Err(std::io::Error::new(std::io::ErrorKind::Other, "Failed to downcast")),
+                };
+                <#name as packet::write::PacketWritable>::write(&packet, &mut writer)?;
+                Ok(())
+            },
         };
+    };
+
+    let gen = quote! {
+        #[linkme::distributed_slice(packet::registry::PACKET_REGISTRY)]
+        static #descriptor_ident: packet::registry::PacketDescriptor = #descriptor
+
+        impl packet::PacketData for #name {
+            fn packet_id(&self) -> i32 {
+                <Self as packet::Packet>::PACKET_ID
+            }
+
+            fn packet_state(&self) -> packet::ConnectionState {
+                <Self as packet::Packet>::PACKET_STATE
+            }
+
+            fn packet_direction(&self) -> packet::PacketDirection {
+                <Self as packet::Packet>::PACKET_DIRECTION
+            }
+
+            fn descriptor(&self) -> &'static packet::registry::PacketDescriptor {
+                & #descriptor_ident
+            }
+
+            fn into_any(self: Box<Self>) -> Box<dyn std::any::Any> {
+                self
+            }
+        }
 
         impl packet::Packet for #name {
 
             const PACKET_ID: i32 = #packet_id;
             const PACKET_STATE: packet::ConnectionState = packet::ConnectionState::#packet_state;
             const PACKET_DIRECTION: packet::PacketDirection = packet::PacketDirection::#packet_direction;
+            const PACKET_DESCRIPTOR: packet::registry::PacketDescriptor = #descriptor
 
             // Read and validate packet id, then read as regular struct
             fn read_packet<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-                let packet: packet::raw::RawPacket = packet::read::PacketReadable::read(reader)?;
-                let mut raw = std::io::BufReader::new(&packet.bytes[..]);
+                let packet_id: packet::types::VarInt = packet::read::PacketReadable::read(reader)?;
 
-                if Self::PACKET_ID != packet.packet_id {
+                if Self::PACKET_ID != packet_id.0 {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
                         "Invalid packet id",
@@ -233,29 +386,17 @@ fn impl_packet_derive(
                 }
 
                 // Read self as regular struct
-                let parsed = packet::read::PacketReadable::read(&mut raw)?;
+                let parsed = packet::read::PacketReadable::read(reader)?;
 
                 Ok(parsed)
             }
 
-            // Extra wrapper around the struct, to include writing length and packet id
+            // Write packet id then write as regular struct
             fn write_packet<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
-                let mut buf = Vec::new();
-                {
-                    // Final bytes without length varint
-                    let mut raw = std::io::BufWriter::new(&mut buf);
+                let packet_id = packet::types::VarInt(Self::PACKET_ID);
+                packet::write::PacketWritable::write(&packet_id, writer)?;
 
-                    // Write packet id
-                    let packet_id = packet::types::VarInt(Self::PACKET_ID);
-                    packet::write::PacketWritable::write(&packet_id, &mut raw)?;
-                    // Write self as a struct
-                    packet::write::PacketWritable::write(&self, &mut raw)?;
-                }
-
-                let len = packet::types::VarInt(buf.len() as i32);
-
-                packet::write::PacketWritable::write(&len, writer)?;
-                writer.write_all(&buf)?;
+                packet::write::PacketWritable::write(self, writer)?;
 
                 Ok(())
             }
@@ -314,23 +455,23 @@ fn impl_packet_readable_derive(
                 }
             }
         }
-        PacketOpts::Enum { repr, data } => {
-            let mut variants = Vec::new();
-            data.variants.iter().for_each(|v| {
-                let ident = &v.ident;
-                let value = match &v.discriminant {
-                    Some((_, expr)) => expr,
-                    None => panic!("Expected enum variant to have a value"),
-                };
+        PacketOpts::Enum { opts, data } => {
+            let parse = match opts {
+                EnumPacketOpts::Repr(repr) => {
+                    let mut variants = Vec::new();
+                    data.variants.iter().for_each(|v| {
+                        let ident = &v.ident;
+                        let value = match &v.discriminant {
+                            Some((_, expr)) => expr,
+                            None => panic!("Expected enum variant to have a value"),
+                        };
 
-                variants.push(quote! {
-                    #value => Self::#ident,
-                });
-            });
+                        variants.push(quote! {
+                            #value => Self::#ident,
+                        });
+                    });
 
-            let gen = quote! {
-                impl packet::read::PacketReadable for #name {
-                    fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+                    quote! {
                         let value: #repr = packet::read::PacketReadable::read(reader)?;
 
                         let variant = match value.into() {
@@ -339,6 +480,52 @@ fn impl_packet_readable_derive(
                             )*
                             _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid enum value")),
                         };
+                    }
+                }
+                EnumPacketOpts::Index(repr) => {
+                    let mut variants = Vec::new();
+                    let mut idx: i32 = 0;
+                    for v in data.variants.iter() {
+                        let ident = &v.ident;
+                        let (idents, reader, _) = named_fields_parser(&v.fields, Some("&self."))?;
+
+                        let reader_impl = quote! {
+                            #idx => {
+                                let mut raw = reader;
+                                #(
+                                    #reader
+                                )*
+
+                                Self::#ident {
+                                    #(
+                                        #idents,
+                                    )*
+                                }
+                            }
+                        };
+                        idx += 1;
+
+                        variants.push(reader_impl);
+                    }
+
+                    quote! {
+                        let index: #repr = packet::read::PacketReadable::read(reader)?;
+                        let index: i32 = index.into();
+
+                        let variant = match index {
+                            #(
+                                #variants
+                            )*
+                            _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid enum index")),
+                        };
+                    }
+                }
+            };
+
+            let gen = quote! {
+                impl packet::read::PacketReadable for #name {
+                    fn read<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+                        #parse
 
                         Ok(variant)
                     }
@@ -400,41 +587,92 @@ fn impl_packet_writable_derive(
                 }
             }
         }
-        PacketOpts::Enum { repr, data } => {
-            let mut variants = Vec::new();
-            data.variants.iter().for_each(|v| {
-                let ident = &v.ident;
-                let value = match &v.discriminant {
-                    Some((_, expr)) => expr,
-                    None => panic!("Expected enum variant to have a value"),
-                };
+        PacketOpts::Enum { opts, data } => {
+            match opts {
+                EnumPacketOpts::Repr(repr) => {
+                    let mut variants = Vec::new();
+                    data.variants.iter().for_each(|v| {
+                        let ident = &v.ident;
+                        let value = match &v.discriminant {
+                            Some((_, expr)) => expr,
+                            None => panic!("Expected enum variant to have a value"),
+                        };
 
-                variants.push(quote! {
-                    #name::#ident => #repr::from(#value),
-                });
-            });
+                        variants.push(quote! {
+                            #name::#ident => #repr::from(#value),
+                        });
+                    });
 
-            let gen = quote! {
-                impl Into<#repr> for &#name {
-                    fn into(self) -> #repr {
-                        match self {
-                            #(
-                                #variants
-                            )*
+                    return Ok(quote! {
+                        impl Into<#repr> for &#name {
+                            fn into(self) -> #repr {
+                                match self {
+                                    #(
+                                        #variants
+                                    )*
+                                }
+                            }
                         }
-                    }
-                }
 
-                impl packet::write::PacketWritable for #name {
-                    fn write<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
-                        let value: #repr = self.into();
-                        packet::write::PacketWritable::write(&value, writer)?;
-                        Ok(())
+                        impl packet::write::PacketWritable for #name {
+                            fn write<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+                                let value: #repr = self.into();
+                                packet::write::PacketWritable::write(&value, writer)?;
+                                Ok(())
+                            }
+                        }
+                    }.into());
+                }
+                EnumPacketOpts::Index(repr) => {
+                    let mut variants = Vec::new();
+                    let mut variants_index = Vec::new();
+                    let mut idx: i32 = 0;
+                    for v in data.variants.iter() {
+                        let ident = &v.ident;
+                        let (idents, _, writer) = named_fields_parser(&v.fields, None)?;
+
+                        let variant_index = quote! {
+                            #name::#ident { .. } => #idx,
+                        };
+                        variants_index.push(variant_index);
+
+                        let writer_impl = quote! {
+                            #name::#ident { #(#idents),* } => {
+                                let mut raw = writer;
+                                #(
+                                    #writer
+                                )*
+                            }
+                        };
+                        idx += 1;
+
+                        variants.push(writer_impl);
                     }
+
+                    return Ok(quote! {
+                        impl packet::write::PacketWritable for #name {
+                            fn index(&self) -> i32 {
+                                match self {
+                                    #(
+                                        #variants_index
+                                    )*
+                                }
+                            }
+
+                            fn write<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+                                let idx: #repr = self.index().into();
+                                packet::write::PacketWritable::write(&idx, writer)?;
+                                match self {
+                                    #(
+                                        #variants
+                                    )*
+                                }
+                                Ok(())
+                            }
+                        }
+                    }.into());
                 }
             };
-
-            return Ok(gen.into());
         }
     }
 }

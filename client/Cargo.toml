@@ -9,3 +9,5 @@ protocol = { path = "../protocol" }
 tracing = { workspace = true }
 tokio = { workspace = true }
 log = "0.4.26"
+paste = "1.0.15"
+rand = { workspace = true }

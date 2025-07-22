@@ -1,15 +1,20 @@
-use std::fmt::Debug;
+use std::{
+    any::Any,
+    fmt::{Debug, Display},
+};
 
 use read::PacketReadable;
 use write::PacketWritable;
 
+pub mod async_read;
+pub mod async_write;
 pub mod raw;
 pub mod read;
 pub mod registry;
 pub mod types;
 pub mod write;
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 #[repr(u8)]
 pub enum ConnectionState {
     Handshaking = 0,
@@ -18,6 +23,19 @@ pub enum ConnectionState {
     Transfer = 3,
     Configuration = 4,
     Play = 5,
+}
+
+impl Display for ConnectionState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConnectionState::Handshaking => write!(f, "Handshaking"),
+            ConnectionState::Status => write!(f, "Status"),
+            ConnectionState::Login => write!(f, "Login"),
+            ConnectionState::Transfer => write!(f, "Transfer"),
+            ConnectionState::Configuration => write!(f, "Configuration"),
+            ConnectionState::Play => write!(f, "Play"),
+        }
+    }
 }
 
 impl Default for ConnectionState {
@@ -53,7 +71,7 @@ impl From<ConnectionState> for u8 {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Copy, Hash)]
 pub enum PacketDirection {
     Clientbound,
     Serverbound,
@@ -64,15 +82,19 @@ pub trait Packet: PacketReadable + PacketWritable + Debug {
     const PACKET_ID: i32;
     const PACKET_STATE: ConnectionState;
     const PACKET_DIRECTION: PacketDirection;
+    const PACKET_DESCRIPTOR: registry::PacketDescriptor;
 
-    /* fn read_packet_boxed<R: std::io::Read>(reader: &mut R) -> std::io::Result<Box<dyn Packet>>
-    where
-        Self: Sized,
-    {
-        Ok(Box::new(Self::read_packet(reader)?))
-    } */
     fn read_packet<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self>
     where
         Self: Sized;
     fn write_packet<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()>;
+}
+
+pub trait PacketData: Any + Debug {
+    fn packet_id(&self) -> i32;
+    fn packet_state(&self) -> ConnectionState;
+    fn packet_direction(&self) -> PacketDirection;
+    fn descriptor(&self) -> &'static registry::PacketDescriptor;
+
+    fn into_any(self: Box<Self>) -> Box<dyn Any>;
 }

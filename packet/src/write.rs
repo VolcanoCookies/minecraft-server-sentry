@@ -4,6 +4,14 @@ use crate::types::VarInt;
 
 pub trait PacketWritable {
     fn write<W: Write>(&self, writer: &mut W) -> std::io::Result<()>;
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut buffer = Vec::new();
+        self.write(&mut buffer).unwrap();
+        buffer
+    }
+    fn index(&self) -> i32 {
+        0
+    }
 }
 
 impl<T: PacketWritable> PacketWritable for &T {
@@ -15,6 +23,13 @@ impl<T: PacketWritable> PacketWritable for &T {
 impl PacketWritable for u8 {
     fn write<W: Write>(&self, writer: &mut W) -> std::io::Result<()> {
         writer.write_all(&[*self])?;
+        Ok(())
+    }
+}
+
+impl PacketWritable for i8 {
+    fn write<W: Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        writer.write_all(&[*self as u8])?;
         Ok(())
     }
 }
@@ -36,10 +51,12 @@ impl_packet_writable!(u32);
 impl_packet_writable!(i32);
 impl_packet_writable!(u64);
 impl_packet_writable!(i64);
+impl_packet_writable!(f32);
+impl_packet_writable!(f64);
 
 impl PacketWritable for bool {
     fn write<W: Write>(&self, writer: &mut W) -> std::io::Result<()> {
-        let byte = if *self { 0x01 } else { 0x00 };
+        let byte: u8 = if *self { 0x01 } else { 0x00 };
         byte.write(writer)?;
         Ok(())
     }
@@ -82,5 +99,17 @@ where
             }
             None => false.write(writer),
         }
+    }
+}
+
+impl<T, const C: usize> PacketWritable for [T; C]
+where
+    T: PacketWritable,
+{
+    fn write<W: Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        for item in self {
+            item.write(writer)?;
+        }
+        Ok(())
     }
 }

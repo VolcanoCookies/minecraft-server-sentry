@@ -4,7 +4,7 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
 use client::MinecraftClient;
 use kdam::{tqdm, Column, RichProgress};
-use log::info;
+use log::{info, LevelFilter};
 use tracing_subscriber::layer::SubscriberExt;
 
 #[tokio::main]
@@ -14,7 +14,12 @@ async fn main() {
     )
     .expect("setup tracy layer");
 
-    simple_logger::SimpleLogger::new().env().init().unwrap();
+    simple_logger::SimpleLogger::new()
+        .env()
+        .with_level(LevelFilter::Debug)
+        .with_module_level("client", LevelFilter::Trace)
+        .init()
+        .unwrap();
 
     /* let subscriber = tracing_subscriber::fmt()
         // filter spans/events with level TRACE or higher.
@@ -53,13 +58,13 @@ async fn main() {
     let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 25565));
     let protocol_version = 769;
 
-    let connection = client
+    /* let connection = client
         .connect(addr, protocol_version)
         .await
         .expect("Failed to connect");
 
     let status = connection.status().await.expect("Failed to get status");
-    info!("Server status: {:?}", status);
+    info!("Server status: {:?}", status); */
 
     let connection = client
         .connect(addr, protocol_version)

@@ -9,3 +9,4 @@ packet = { path = "../packet" }
 packet_macros = { path = "../packet_macros" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+log = "0.4.26"
