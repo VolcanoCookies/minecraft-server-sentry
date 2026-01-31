@@ -1,5 +1,3 @@
-use std::f32::consts::E;
-
 use darling::{FromDeriveInput, FromField};
 use quote::ToTokens;
 use syn::{DataEnum, DataStruct};
