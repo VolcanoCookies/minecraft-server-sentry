@@ -471,7 +471,7 @@ impl Connection {
     }
 
     #[instrument]
-    pub async fn send_packet<P>(&mut self, packet: P) -> std::io::Result<()>
+    pub async fn send_packet<P>(&self, packet: P) -> std::io::Result<()>
     where
         P: Packet + PacketData,
     {
@@ -489,7 +489,7 @@ impl Connection {
     }
 
     #[instrument]
-    pub fn blocking_wait_for<P: Packet>(&mut self) -> std::io::Result<P> {
+    pub fn blocking_wait_for<P: Packet>(&self) -> std::io::Result<P> {
         loop {
             let mut rx = self.from_reader_tx.subscribe();
             match rx.blocking_recv() {
@@ -510,7 +510,7 @@ impl Connection {
     }
 
     #[instrument]
-    pub async fn wait_for<P: Packet>(&mut self) -> std::io::Result<P> {
+    pub async fn wait_for<P: Packet>(&self) -> std::io::Result<P> {
         let mut rx = self.from_reader_tx.subscribe();
         loop {
             match rx.recv().await {
@@ -531,7 +531,7 @@ impl Connection {
     }
 
     #[instrument]
-    pub async fn wait_for_raw(&mut self) -> std::io::Result<RawPacket> {
+    pub async fn wait_for_raw(&self) -> std::io::Result<RawPacket> {
         let mut rx = self.from_reader_tx.subscribe();
         loop {
             match rx.recv().await {
